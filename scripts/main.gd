@@ -13,9 +13,6 @@ const CONFETTI: Array[Color] = [Color("ff5d73"), Color("ffd166"), Color("06d6a0"
 
 var rng := RandomNumberGenerator.new()
 var font: Font = preload("res://assets/fonts/Roboto-Regular.ttf")
-var sfx := Sfx.new()
-var image_paths: Array[String] = []
-var image_index := -1
 
 var board_rect := Rect2()
 var cell_size := Vector2.ZERO
@@ -24,6 +21,7 @@ var grid_pieces: Array[PuzzlePiece] = [] # reading order, never reordered
 var pieces: Array[PuzzlePiece] = []      # z-order (last = topmost)
 var locked_count := 0
 var held: PuzzlePiece = null
+var paused := false
 var grab_offset := Vector2.ZERO
 var solved := false
 var near_home := false
@@ -42,13 +40,14 @@ var board_layer: Node2D
 var piece_layer: Node2D
 var progress_label: Label
 var message_label: Label
-var hint_label: Label
+var caption_label: Label
+var win_buttons: HBoxContainer
+var ui_root: Control
 
 
 func _ready() -> void:
 	rng.randomize()
-	add_child(sfx)
-	_collect_images()
+	Game.ensure_image()
 	_build_ui()
 	new_puzzle()
 
@@ -57,15 +56,6 @@ func _process(delta: float) -> void:
 	if held:
 		tilt_target = lerpf(tilt_target, 0.0, minf(1.0, 10.0 * delta))
 		held.rotation = lerp_angle(held.rotation, tilt_target, minf(1.0, 20.0 * delta))
-
-
-func _collect_images() -> void:
-	for f in DirAccess.get_files_at("res://assets/images"):
-		f = f.trim_suffix(".import") # exported builds list only the .import files
-		var path := "res://assets/images/" + f
-		if f.get_extension().to_lower() in ["jpg", "jpeg", "png"] and not image_paths.has(path):
-			image_paths.append(path)
-	image_paths.shuffle()
 
 
 func _build_ui() -> void:
@@ -80,7 +70,7 @@ func _build_ui() -> void:
 	var title := _make_label(ui, "JigMath", 36, Vector2(40, 24))
 	title.add_theme_color_override("font_color", GOLD)
 	progress_label = _make_label(ui, "", 22, Vector2(40, 655))
-	_make_label(ui, "N: new puzzle    R: reshuffle", 18, Vector2(900, 684)).modulate.a = 0.6
+	_make_label(ui, "N: next puzzle    R: reshuffle    Esc: menu", 18, Vector2(900, 684)).modulate.a = 0.6
 
 	message_label = _make_label(ui, "Solved!", 84, Vector2(BOARD_AREA.position.x, 300))
 	message_label.size = Vector2(BOARD_AREA.size.x, 110)
@@ -90,13 +80,36 @@ func _build_ui() -> void:
 	message_label.add_theme_color_override("font_outline_color", Color.BLACK)
 	message_label.add_theme_constant_override("outline_size", 16)
 	message_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	hint_label = _make_label(ui, "Press N for the next puzzle", 24, Vector2(BOARD_AREA.position.x, 420))
-	hint_label.size = Vector2(BOARD_AREA.size.x, 40)
-	hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hint_label.add_theme_color_override("font_outline_color", Color.BLACK)
-	hint_label.add_theme_constant_override("outline_size", 8)
+	ui_root = Control.new()
+	ui_root.theme = UiTheme.theme()
+	ui_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	ui_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ui.add_child(ui_root)
 	message_label.visible = false
-	hint_label.visible = false
+
+	caption_label = _make_label(ui, "", 22, Vector2(BOARD_AREA.position.x, 62))
+	caption_label.size = Vector2(BOARD_AREA.size.x, 30)
+	caption_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	caption_label.modulate.a = 0.7
+
+	var menu_button := UiTheme.make_button("Menu", Vector2(130, 48))
+	menu_button.position = Vector2(1280 - 130 - 24, 18)
+	menu_button.pressed.connect(open_pause)
+	ui_root.add_child(menu_button)
+
+	win_buttons = HBoxContainer.new()
+	win_buttons.add_theme_constant_override("separation", 16)
+	win_buttons.position = Vector2(BOARD_AREA.position.x + 30, 430)
+	win_buttons.size = Vector2(BOARD_AREA.size.x - 60, 60)
+	win_buttons.alignment = BoxContainer.ALIGNMENT_CENTER
+	var next := UiTheme.make_button("Next puzzle", Vector2(220, 58))
+	next.pressed.connect(_next_puzzle)
+	win_buttons.add_child(next)
+	var pick := UiTheme.make_button("All puzzles", Vector2(220, 58))
+	pick.pressed.connect(Game.go_select)
+	win_buttons.add_child(pick)
+	win_buttons.visible = false
+	ui_root.add_child(win_buttons)
 
 
 func _make_label(parent: Node, text: String, font_size: int, pos: Vector2) -> Label:
@@ -112,8 +125,8 @@ func _make_label(parent: Node, text: String, font_size: int, pos: Vector2) -> La
 # ---------------------------------------------------------------- puzzle setup
 
 func new_puzzle() -> void:
-	image_index = (image_index + 1) % image_paths.size()
-	texture = load(image_paths[image_index])
+	texture = load(Game.current_image)
+	caption_label.text = "%s  -  %s" % [Game.get_section(Game.current_section).get("title", ""), Game.pretty_name(Game.current_image)]
 	_fit_board()
 	_spawn_pieces()
 	board_layer.queue_redraw()
@@ -138,7 +151,7 @@ func _spawn_pieces() -> void:
 	combo = 0
 	frame_glow = 0.0
 	message_label.visible = false
-	hint_label.visible = false
+	win_buttons.visible = false
 
 	# One random sign per interior edge; neighbours see it with opposite sign.
 	var right_signs: Array = [] # [row][col] edge between (col,row) and (col+1,row)
@@ -211,14 +224,18 @@ func reshuffle() -> void:
 		var p: PuzzlePiece = loose[i]
 		p.new_tween().tween_property(p, "position", targets[i], 0.35)\
 			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	sfx.play("tick", 0.8)
+	Sfx.play("tick", 0.8)
 
 
 # ---------------------------------------------------------------- input
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event.is_action_pressed("new_puzzle"):
-		new_puzzle()
+	if event.is_action_pressed("ui_cancel"):
+		open_pause()
+	elif paused:
+		return
+	elif event.is_action_pressed("new_puzzle"):
+		_next_puzzle()
 	elif event.is_action_pressed("reshuffle"):
 		reshuffle()
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
@@ -232,12 +249,28 @@ func _unhandled_input(event: InputEvent) -> void:
 		_update_near()
 
 
+func _next_puzzle() -> void:
+	Game.advance_image()
+	new_puzzle()
+
+
+func open_pause() -> void:
+	if paused:
+		return
+	paused = true
+	if held:
+		_drop()
+	var menu := PauseMenu.new()
+	menu.resumed.connect(func() -> void: paused = false)
+	ui_root.add_child(menu)
+
+
 func _snap_distance() -> float:
 	return minf(cell_size.x, cell_size.y) * SNAP_FRACTION
 
 
 func _pick_up(mouse: Vector2) -> void:
-	if solved:
+	if solved or paused:
 		return
 	for i in range(pieces.size() - 1, -1, -1): # last = topmost
 		var p := pieces[i]
@@ -251,7 +284,7 @@ func _pick_up(mouse: Vector2) -> void:
 			p.new_tween().tween_property(p, "scale", Vector2.ONE * 1.08, 0.1)\
 				.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 			create_tween().tween_property(p, "lift", 1.0, 0.1)
-			sfx.play("pick", rng.randf_range(0.95, 1.1))
+			Sfx.play("pick", rng.randf_range(0.95, 1.1))
 			_update_near()
 			return
 
@@ -264,7 +297,7 @@ func _update_near() -> void:
 	near_home = n
 	board_layer.queue_redraw()
 	if n:
-		sfx.play("tick")
+		Sfx.play("tick")
 		held.new_tween().tween_property(held, "scale", Vector2.ONE * 1.14, 0.08)
 	elif held:
 		held.new_tween().tween_property(held, "scale", Vector2.ONE * 1.08, 0.08)
@@ -290,7 +323,7 @@ func _drop() -> void:
 	t.tween_property(p, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	if board_rect.grow(cell_size.x * 0.15).has_point(rest):
 		# Dropped on the board but in the wrong place: a little "nope" wiggle.
-		sfx.play("wrong")
+		Sfx.play("wrong")
 		t.set_parallel(false)
 		for d in [10.0, -8.0, 5.0, 0.0]:
 			t.tween_property(p, "position:x", rest.x + d, 0.045)
@@ -304,7 +337,7 @@ func _lock(p: PuzzlePiece) -> void:
 	var now := Time.get_ticks_msec()
 	combo = combo + 1 if now - last_snap_ms <= COMBO_WINDOW_MS else 0
 	last_snap_ms = now
-	sfx.play("snap", sfx.combo_pitch(combo))
+	Sfx.play("snap", Sfx.combo_pitch(combo))
 
 	var t := p.new_tween()
 	t.tween_property(p, "position", p.home, 0.07).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
@@ -327,7 +360,7 @@ func _check_row(row: int) -> void:
 	for col in COLS:
 		if not grid_pieces[row * COLS + col].locked:
 			return
-	sfx.play("row")
+	Sfx.play("row")
 	for col in COLS:
 		var p := grid_pieces[row * COLS + col]
 		var t := create_tween()
@@ -352,7 +385,8 @@ func _bump(label: Control) -> void:
 
 func _on_solved() -> void:
 	solved = true
-	sfx.play("win")
+	Settings.mark_completed(Game.current_image)
+	Sfx.play("win")
 	_shake(7.0, 0.35)
 
 	# Wave of celebration across the pieces in reading order, labels and seams fade out.
@@ -387,9 +421,9 @@ func _on_solved() -> void:
 	pop.tween_interval(0.6)
 	pop.tween_property(message_label, "scale", Vector2.ONE, 0.7)\
 		.set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
-	hint_label.visible = true
-	hint_label.modulate.a = 0.0
-	create_tween().tween_property(hint_label, "modulate:a", 1.0, 0.5).set_delay(1.8)
+	win_buttons.visible = true
+	win_buttons.modulate.a = 0.0
+	create_tween().tween_property(win_buttons, "modulate:a", 1.0, 0.5).set_delay(1.8)
 
 
 func _confetti(from: Vector2) -> void:

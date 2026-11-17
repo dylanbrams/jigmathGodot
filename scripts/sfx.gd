@@ -1,6 +1,5 @@
-class_name Sfx
 extends Node
-## Tiny procedural sound bank so the prototype needs no audio assets.
+## Autoload "Sfx": tiny procedural sound bank so the prototype needs no audio assets.
 ## Swap these for real samples later; keep the play(name, pitch) interface.
 
 const RATE := 22050
@@ -16,8 +15,11 @@ var _next := 0
 func _ready() -> void:
 	for i in POOL:
 		var p := AudioStreamPlayer.new()
+		p.bus = Settings.SFX_BUS
 		add_child(p)
 		_players.append(p)
+	_streams["click"] = _synth([[740.0, 0.0], [1110.0, 0.0]], 0.09, 40.0, 0.4)
+	_streams["hover"] = _synth([[1320.0, 0.0]], 0.04, 80.0, 0.12)
 	_streams["pick"] = _synth([[520.0, 0.0]], 0.07, 45.0, 0.35)
 	_streams["tick"] = _synth([[1040.0, 0.0]], 0.04, 90.0, 0.25)
 	_streams["snap"] = _synth([[523.25, 0.0], [1046.5, 0.0], [1568.0, 0.03]], 0.28, 14.0, 0.6)
