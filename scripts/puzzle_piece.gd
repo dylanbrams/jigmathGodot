@@ -41,7 +41,9 @@ func _init() -> void:
 
 
 ## signs = [top, right, bottom, left]; +1 tab, -1 blank, 0 flat. Needs `home`, `size` set.
-func build(signs: Array[int], board_rect: Rect2) -> void:
+## side_pos = [right, left]: where down the side edge the tab sits (0..1 from the top),
+## kept off-centre so notches never collide with the label.
+func build(signs: Array[int], side_pos: Array[float], board_rect: Rect2, uv_rect: Rect2) -> void:
 	var hw := size.x * 0.5
 	var hh := size.y * 0.5
 	var tl := Vector2(-hw, -hh)
@@ -50,12 +52,12 @@ func build(signs: Array[int], board_rect: Rect2) -> void:
 	var bl := Vector2(-hw, hh)
 	outline = PackedVector2Array()
 	outline.append_array(JigsawEdge.points(tl, tr, Vector2.UP, signs[0], size))
-	outline.append_array(JigsawEdge.points(tr, br, Vector2.RIGHT, signs[1], size))
+	outline.append_array(JigsawEdge.points(tr, br, Vector2.RIGHT, signs[1], size, side_pos[0]))
 	outline.append_array(JigsawEdge.points(br, bl, Vector2.DOWN, signs[2], size))
-	outline.append_array(JigsawEdge.points(bl, tl, Vector2.LEFT, signs[3], size))
+	outline.append_array(JigsawEdge.points(bl, tl, Vector2.LEFT, signs[3], size, 1.0 - side_pos[1]))
 	uvs = PackedVector2Array()
 	for v in outline:
-		uvs.append((home + v - board_rect.position) / board_rect.size)
+		uvs.append(uv_rect.position + (home + v - board_rect.position) / board_rect.size * uv_rect.size)
 	queue_redraw()
 
 
@@ -97,8 +99,8 @@ func _draw() -> void:
 
 
 func _draw_label() -> void:
-	var fs := 34
-	var max_w := size.x * 0.82
+	var fs := clampi(int(size.y * 0.26), 18, 34)
+	var max_w := size.x * 0.88
 	var w := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
 	if w > max_w:
 		fs = maxi(10, int(fs * max_w / w))

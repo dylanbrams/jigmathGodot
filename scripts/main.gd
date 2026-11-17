@@ -4,8 +4,13 @@ extends Node2D
 
 const COLS := 5
 const ROWS := 4
-const BOARD_AREA := Rect2(40, 100, 640, 540)
-const TRAY_AREA := Rect2(730, 70, 500, 600)
+const BOARD_AREA := Rect2(40, 96, 800, 564)
+const TRAY_AREA := Rect2(880, 84, 370, 590)
+const TRAY_SCALE := 0.7  # pieces rest small in the tray, grow when picked up
+## Images are centre-cropped to a landscape shape in this range so pieces are always wide.
+const MIN_ASPECT := 1.45
+const MAX_ASPECT := 1.78
+const SIDE_POSITIONS: Array[float] = [0.22, 0.78]
 const SNAP_FRACTION := 0.45 # of the smaller cell dimension
 const COMBO_WINDOW_MS := 2500
 const GOLD := Color(1.0, 0.85, 0.4)
@@ -15,6 +20,7 @@ var rng := RandomNumberGenerator.new()
 var font: Font = preload("res://assets/fonts/Roboto-Regular.ttf")
 
 var board_rect := Rect2()
+var crop_rect := Rect2() # region of the texture (pixels) shown on the board
 var cell_size := Vector2.ZERO
 var texture: Texture2D
 var grid_pieces: Array[PuzzlePiece] = [] # reading order, never reordered
@@ -54,6 +60,8 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	if held:
+		held.position = get_global_mouse_position() + grab_offset
+		_update_near()
 		tilt_target = lerpf(tilt_target, 0.0, minf(1.0, 10.0 * delta))
 		held.rotation = lerp_angle(held.rotation, tilt_target, minf(1.0, 20.0 * delta))
 
@@ -69,7 +77,7 @@ func _build_ui() -> void:
 	add_child(ui)
 	var title := _make_label(ui, "JigMath", 36, Vector2(40, 24))
 	title.add_theme_color_override("font_color", GOLD)
-	progress_label = _make_label(ui, "", 22, Vector2(40, 655))
+	progress_label = _make_label(ui, "", 22, Vector2(40, 672))
 	_make_label(ui, "N: next puzzle    R: reshuffle    Esc: menu", 18, Vector2(900, 684)).modulate.a = 0.6
 
 	message_label = _make_label(ui, "Solved!", 84, Vector2(BOARD_AREA.position.x, 300))
@@ -134,8 +142,17 @@ func new_puzzle() -> void:
 
 func _fit_board() -> void:
 	var tex_size := texture.get_size()
-	var scale_f := minf(BOARD_AREA.size.x / tex_size.x, BOARD_AREA.size.y / tex_size.y)
-	var s := tex_size * scale_f
+	var aspect := clampf(tex_size.x / tex_size.y, MIN_ASPECT, MAX_ASPECT)
+	var crop := tex_size
+	if tex_size.x / tex_size.y < aspect:
+		crop.y = tex_size.x / aspect # too tall: trim top and bottom
+	else:
+		crop.x = tex_size.y * aspect # too wide: trim left and right
+	# Trim tall images mostly from the bottom (heads and horizons tend to sit high).
+	var slack := tex_size - crop
+	crop_rect = Rect2(Vector2(slack.x * 0.5, slack.y * 0.25), crop)
+	var scale_f := minf(BOARD_AREA.size.x / crop.x, BOARD_AREA.size.y / crop.y)
+	var s := crop * scale_f
 	board_rect = Rect2(BOARD_AREA.position + (BOARD_AREA.size - s) * 0.5, s)
 	cell_size = s / Vector2(COLS, ROWS)
 
@@ -156,12 +173,16 @@ func _spawn_pieces() -> void:
 	# One random sign per interior edge; neighbours see it with opposite sign.
 	var right_signs: Array = [] # [row][col] edge between (col,row) and (col+1,row)
 	var below_signs: Array = [] # [row][col] edge between (col,row) and (col,row+1)
+	var right_pos: Array = []   # [row][col] where down the right edge the tab sits
 	for r in ROWS:
 		right_signs.append(_random_signs(COLS))
 		below_signs.append(_random_signs(COLS))
+		var positions: Array[float] = []
+		for c in COLS:
+			positions.append(SIDE_POSITIONS[rng.randi_range(0, 1)])
+		right_pos.append(positions)
 
 	var tokens := MathGenerator.generate(COLS, ROWS, rng)
-	var src_cell := texture.get_size() / Vector2(COLS, ROWS)
 	for row in ROWS:
 		for col in COLS:
 			var p := PuzzlePiece.new()
@@ -177,7 +198,11 @@ func _spawn_pieces() -> void:
 				0 if row == ROWS - 1 else below_signs[row][col],
 				0 if col == 0 else -right_signs[row][col - 1],
 			]
-			p.build(signs, board_rect)
+			var side_pos: Array[float] = [
+				right_pos[row][col] if col < COLS - 1 else 0.5,
+				right_pos[row][col - 1] if col > 0 else 0.5,
+			]
+			p.build(signs, side_pos, board_rect, Rect2(crop_rect.position / texture.get_size(), crop_rect.size / texture.get_size()))
 			piece_layer.add_child(p)
 			pieces.append(p)
 			grid_pieces.append(p)
@@ -194,12 +219,12 @@ func _random_signs(count: int) -> Array[int]:
 
 func _scatter() -> void:
 	var slots: Array[Vector2] = []
-	var cols := maxi(1, int(TRAY_AREA.size.x / (cell_size.x * 1.15)))
+	var cols := maxi(1, int(TRAY_AREA.size.x / (cell_size.x * TRAY_SCALE * 1.05)))
 	var rows := ceili(float(pieces.size()) / cols)
 	var step := Vector2(TRAY_AREA.size.x / cols, TRAY_AREA.size.y / rows)
 	for i in pieces.size():
 		var slot := Vector2(i % cols, i / cols)
-		var jitter := Vector2(rng.randf_range(-1, 1), rng.randf_range(-1, 1)) * 14.0
+		var jitter := Vector2(rng.randf_range(-1, 1), rng.randf_range(-1, 1)) * 4.0
 		slots.append(TRAY_AREA.position + (slot + Vector2(0.5, 0.5)) * step + jitter)
 	slots.shuffle()
 	for i in pieces.size():
@@ -208,7 +233,7 @@ func _scatter() -> void:
 		p.position = slots[i]
 		# pop-in
 		p.scale = Vector2.ZERO
-		p.new_tween().tween_property(p, "scale", Vector2.ONE, 0.35)\
+		p.new_tween().tween_property(p, "scale", Vector2.ONE * TRAY_SCALE, 0.35)\
 			.set_delay(i * 0.02).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 
@@ -244,9 +269,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		else:
 			_drop()
 	elif event is InputEventMouseMotion and held:
-		held.position = get_global_mouse_position() + grab_offset
 		tilt_target = clampf(tilt_target + event.relative.x * 0.004, -0.3, 0.3)
-		_update_near()
 
 
 func _next_puzzle() -> void:
@@ -284,6 +307,7 @@ func _pick_up(mouse: Vector2) -> void:
 			p.new_tween().tween_property(p, "scale", Vector2.ONE * 1.08, 0.1)\
 				.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 			create_tween().tween_property(p, "lift", 1.0, 0.1)
+			create_tween().tween_property(self, "grab_offset", Vector2.ZERO, 0.12)
 			Sfx.play("pick", rng.randf_range(0.95, 1.1))
 			_update_near()
 			return
@@ -320,7 +344,8 @@ func _drop() -> void:
 	p.z_index = 1
 	var rest := p.position
 	var t := p.new_tween()
-	t.tween_property(p, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	var rest_scale := TRAY_SCALE if TRAY_AREA.grow(30).has_point(rest) else 1.0
+	t.tween_property(p, "scale", Vector2.ONE * rest_scale, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	if board_rect.grow(cell_size.x * 0.15).has_point(rest):
 		# Dropped on the board but in the wrong place: a little "nope" wiggle.
 		Sfx.play("wrong")
@@ -483,7 +508,7 @@ func _draw_board() -> void:
 	var frame := Color(0.16, 0.19, 0.28).lerp(GOLD, frame_glow)
 	board_layer.draw_rect(board_rect.grow(8), frame)
 	board_layer.draw_rect(board_rect, Color(0.07, 0.08, 0.12))
-	board_layer.draw_texture_rect(texture, board_rect, false, Color(1, 1, 1, 0.12))
+	board_layer.draw_texture_rect_region(texture, board_rect, crop_rect, Color(1, 1, 1, 0.12))
 	for c in range(COLS + 1):
 		var x := board_rect.position.x + c * cell_size.x
 		board_layer.draw_line(Vector2(x, board_rect.position.y), Vector2(x, board_rect.end.y), Color(1, 1, 1, 0.12))

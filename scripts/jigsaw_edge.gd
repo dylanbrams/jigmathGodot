@@ -5,6 +5,8 @@ extends RefCounted
 ## signs) produce exactly matching tab and blank.
 
 const SUBDIVISIONS := 6
+## Global size of tabs/blanks relative to the profile below.
+const TAB_SCALE := 0.85
 ## Profile in units of the piece's shorter side: x measured from edge centre, y = height
 ## above the edge. Ghost points at both ends give natural spline tangents.
 const PROFILE: Array[Vector2] = [
@@ -21,14 +23,14 @@ static var _curve: PackedVector2Array
 
 ## Points from `a` (inclusive) towards `b` (exclusive). `outward` is the unit normal
 ## pointing away from the piece; sign +1 = tab, -1 = blank, 0 = flat border.
-static func points(a: Vector2, b: Vector2, outward: Vector2, sign: int, piece_size: Vector2) -> PackedVector2Array:
+static func points(a: Vector2, b: Vector2, outward: Vector2, sign: int, piece_size: Vector2, along_frac := 0.5) -> PackedVector2Array:
 	var out := PackedVector2Array([a])
 	if sign == 0:
 		return out
 	var along := b - a
 	var dir := along.normalized()
-	var mid := along.length() * 0.5
-	var s := minf(piece_size.x, piece_size.y)
+	var mid := along.length() * along_frac # where along a->b the tab is centred
+	var s := minf(piece_size.x, piece_size.y) * TAB_SCALE
 	for pt in _get_curve():
 		out.append(a + dir * (mid + pt.x * s) + outward * (pt.y * s * sign))
 	return out
